@@ -17,7 +17,12 @@ Primary source: official KEGG REST API at `https://rest.kegg.jp/`. KEGG states t
 2. Run `scripts/map_metabolites.py` for deterministic KEGG mapping when a file or list is provided.
 3. Review low-confidence matches manually before interpretation.
 4. Summarize pathways by number of matched differential metabolites and direction if available.
-5. Write biological interpretation from pathway context:
+5. If the user provides a measured background universe, run pathway enrichment with `--enrichment --background-input <file>`.
+   - Use hypergeometric over-representation over the measured/detectable background, not all KEGG compounds.
+   - Report p-value, BH-FDR, fold enrichment, overlap count, background pathway size, and overlapping KEGG compounds.
+   - For large exploratory backgrounds, use `--skip-pubchem-cid` unless PubChem CID output is needed.
+6. If the user provides an organism code such as `hsa`, `mmu`, `rno`, or `ath`, use `--organism <code> --pathway-scope organism` for organism-specific pathway filtering. Use `map` reference pathways by default.
+7. Write biological interpretation from pathway context:
    - pathway class and KEGG pathway name,
    - which differential metabolites hit the pathway,
    - up/down direction if available,
@@ -49,6 +54,7 @@ Outputs:
 
 - `<out-prefix>.metabolite_mappings.csv`: one row per metabolite with matched KEGG compound and pathways.
 - `<out-prefix>.pathway_summary.csv`: pathway-level hit summary.
+- `<out-prefix>.pathway_enrichment.csv`: enrichment results when `--enrichment` is used.
 - `<out-prefix>.json`: full mapping details and candidate lists.
 
 If `--name-column` is omitted, the script tries `metabolite`, `name`, `compound`, `Metabolite`, `Compound`, then the first column.
