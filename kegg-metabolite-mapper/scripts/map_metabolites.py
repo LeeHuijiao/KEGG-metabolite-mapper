@@ -16,6 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
+from math import comb
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
@@ -183,6 +184,29 @@ def first_existing(row: dict, names: Iterable[str]) -> str:
     return ""
 
 
+def normalize_pathway_id(value: str) -> str:
+    value = value.strip().replace("path:", "")
+    return value
+
+
+def pathway_matches_scope(pathway_id: str, organism: str | None, scope: str) -> bool:
+    pid = normalize_pathway_id(pathway_id)
+    if scope == "both":
+        return True
+    if scope == "map":
+        return pid.startswith("map")
+    if scope == "organism":
+        return bool(organism) and pid.startswith(organism)
+    return True
+
+
+def convert_pathway_scope(pathway_id: str, organism: str | None, scope: str) -> str:
+    pid = normalize_pathway_id(pathway_id)
+    if scope == "organism" and organism and pid.startswith("map") and len(pid) == 8:
+        return organism + pid[3:]
+    return pid
+
+
 def names_from_find_description(desc: str) -> List[str]:
     desc = desc.split("\t")[-1]
     return [part.strip() for part in desc.split(";") if part.strip()]
@@ -270,6 +294,21 @@ def get_pathways_for_compound(client: KeggClient, cpd_id: str) -> List[str]:
     return sorted(set(pathways))
 
 
+def get_filtered_pathways_for_compound(
+    client: KeggClient,
+    cpd_id: str,
+    organism: str | None = None,
+    scope: str = "map",
+) -> List[str]:
+    pathways = get_pathways_for_compound(client, cpd_id)
+    converted = [convert_pathway_scope(pid, organism, scope) for pid in pathways]
+    filtered = [pid for pid in converted if pathway_matches_scope(pid, organism, scope)]
+    if scope == "organism" and organism:
+        names = list_pathway_names(client, filtered)
+        filtered = [pid for pid in filtered if pid in names]
+    return sorted(set(filtered))
+
+
 def list_pathway_names(client: KeggClient, pathway_ids: Iterable[str]) -> Dict[str, str]:
     ids = sorted(set(pid.replace("path:", "") for pid in pathway_ids if pid))
     out = {}
@@ -286,34 +325,24 @@ def get_pathway_details(client: KeggClient, pathway_id: str) -> Dict[str, object
     return parse_kegg_flat(client.get_text(f"get/{pid}"))
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Map metabolites to KEGG compounds and pathways.")
-    parser.add_argument("--input", required=True, help="CSV/TSV/TXT input file.")
-    parser.add_argument("--out-prefix", required=True, help="Output prefix, e.g. output/kegg_results.")
-    parser.add_argument("--name-column", default=None, help="Column containing metabolite names or IDs.")
-    parser.add_argument("--direction-column", default=None, help="Optional up/down direction column.")
-    parser.add_argument("--top-n", type=int, default=5, help="Number of candidates to keep in JSON.")
-    parser.add_argument("--include-pathway-details", action="store_true", help="Also fetch KEGG pathway flat-file details. Slower; use for final interpretation.")
-    parser.add_argument("--max-detail-pathways", type=int, default=30, help="Maximum pathways for --include-pathway-details.")
-    parser.add_argument("--skip-pubchem-cid", action="store_true", help="Skip PubChem SID-to-CID lookup.")
-    args = parser.parse_args()
-
-    in_path = Path(args.input)
-    out_prefix = Path(args.out_prefix)
-    out_prefix.parent.mkdir(parents=True, exist_ok=True)
-
-    rows, name_col = read_table(in_path, args.name_column)
-    client = KeggClient()
-    pubchem = PubChemClient()
-
+def map_rows(
+    rows: List[dict],
+    name_col: str,
+    client: KeggClient,
+    pubchem: PubChemClient,
+    direction_column: str | None = None,
+    top_n: int = 5,
+    skip_pubchem_cid: bool = False,
+    organism: str | None = None,
+    pathway_scope: str = "map",
+) -> Tuple[List[dict], Dict[str, list], set]:
     mappings = []
     pathway_hits = defaultdict(list)
     all_pathways = set()
-
     for idx, row in enumerate(rows, start=1):
         original = row.get(name_col, "")
         query = normalize_name(original)
-        direction = row.get(args.direction_column, "") if args.direction_column else ""
+        direction = row.get(direction_column, "") if direction_column else ""
         result = {
             "input_index": idx,
             "input_name": original,
@@ -335,7 +364,7 @@ def main() -> int:
             candidates = map_identifier(client, query)
             result["candidates"] = [
                 {"kegg_compound": cpd, "description": desc, "score": score, "reason": reason}
-                for cpd, desc, score, reason in candidates[: args.top_n]
+                for cpd, desc, score, reason in candidates[:top_n]
             ]
             if candidates:
                 cpd, desc, score, reason = candidates[0]
@@ -357,7 +386,7 @@ def main() -> int:
                     chebi = ";".join(dblinks.get("ChEBI", []))
                 if not pubchem_sid:
                     pubchem_sid = ";".join(dblinks.get("PubChem", []))
-                if not pubchem_cid and pubchem_sid and not args.skip_pubchem_cid:
+                if not pubchem_cid and pubchem_sid and not skip_pubchem_cid:
                     cid_values = []
                     for sid in pubchem_sid.split(";"):
                         cid = pubchem.sid_to_cid(sid)
@@ -370,7 +399,7 @@ def main() -> int:
                     "PubChem_SID": pubchem_sid,
                     "PubChem_CID": pubchem_cid,
                 }
-                pathways = get_pathways_for_compound(client, cpd)
+                pathways = get_filtered_pathways_for_compound(client, cpd, organism=organism, scope=pathway_scope)
                 result["pathways"] = pathways
                 all_pathways.update(pathways)
                 for pid in pathways:
@@ -379,6 +408,128 @@ def main() -> int:
             result["confidence"] = "error"
             result["match_reason"] = str(exc)
         mappings.append(result)
+    return mappings, pathway_hits, all_pathways
+
+
+def hypergeom_sf(k: int, n: int, K: int, N: int) -> float:
+    """P[X >= k] for X ~ Hypergeometric(N population, K success, n draws)."""
+    if N <= 0 or K < 0 or n < 0 or k < 0:
+        return 1.0
+    max_i = min(K, n)
+    if k > max_i:
+        return 1.0
+    denom = comb(N, n)
+    if denom == 0:
+        return 1.0
+    total = 0
+    for i in range(k, max_i + 1):
+        if n - i <= N - K:
+            total += comb(K, i) * comb(N - K, n - i)
+    return min(1.0, total / denom)
+
+
+def bh_fdr(pvalues: List[float]) -> List[float]:
+    n = len(pvalues)
+    order = sorted(range(n), key=lambda i: pvalues[i])
+    adjusted = [1.0] * n
+    prev = 1.0
+    for rank, idx in enumerate(reversed(order), start=1):
+        original_rank = n - rank + 1
+        val = min(prev, pvalues[idx] * n / original_rank)
+        adjusted[idx] = min(1.0, val)
+        prev = val
+    return adjusted
+
+
+def cpd_short(cpd_id: str) -> str:
+    return clean_cpd_id(cpd_id).replace("cpd:", "")
+
+
+def build_pathway_sets(mappings: List[dict]) -> Dict[str, set]:
+    sets: Dict[str, set] = defaultdict(set)
+    for item in mappings:
+        cpd = cpd_short(str(item.get("matched_kegg_compound", "")))
+        if not re.fullmatch(r"C\d{5}", cpd):
+            continue
+        for pid in item.get("pathways", []):
+            sets[pid].add(cpd)
+    return sets
+
+
+def compute_enrichment(diff_mappings: List[dict], bg_mappings: List[dict]) -> List[dict]:
+    diff_cpds = {cpd_short(str(item.get("matched_kegg_compound", ""))) for item in diff_mappings if item.get("matched_kegg_compound")}
+    bg_cpds = {cpd_short(str(item.get("matched_kegg_compound", ""))) for item in bg_mappings if item.get("matched_kegg_compound")}
+    diff_cpds = {cpd for cpd in diff_cpds if re.fullmatch(r"C\d{5}", cpd)}
+    bg_cpds = {cpd for cpd in bg_cpds if re.fullmatch(r"C\d{5}", cpd)}
+    diff_cpds &= bg_cpds
+    diff_sets = build_pathway_sets(diff_mappings)
+    bg_sets = build_pathway_sets(bg_mappings)
+    N = len(bg_cpds)
+    n = len(diff_cpds)
+    rows = []
+    pvalues = []
+    for pid, bg_members_all in bg_sets.items():
+        bg_members = bg_members_all & bg_cpds
+        diff_members = (diff_sets.get(pid, set()) & diff_cpds)
+        K = len(bg_members)
+        k = len(diff_members)
+        if k == 0 or K == 0 or N == 0 or n == 0:
+            continue
+        p = hypergeom_sf(k, n, K, N)
+        pvalues.append(p)
+        rows.append({
+            "pathway_id": pid,
+            "overlap_count": k,
+            "diff_count": n,
+            "pathway_background_count": K,
+            "background_count": N,
+            "p_value": p,
+            "fold_enrichment": (k / n) / (K / N) if K and n and N else "",
+            "overlap_kegg_compounds": ";".join(sorted(diff_members)),
+        })
+    fdrs = bh_fdr(pvalues)
+    for row, fdr in zip(rows, fdrs):
+        row["fdr_bh"] = fdr
+    rows.sort(key=lambda row: (row["fdr_bh"], row["p_value"], -row["overlap_count"]))
+    return rows
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Map metabolites to KEGG compounds and pathways.")
+    parser.add_argument("--input", required=True, help="CSV/TSV/TXT input file.")
+    parser.add_argument("--out-prefix", required=True, help="Output prefix, e.g. output/kegg_results.")
+    parser.add_argument("--name-column", default=None, help="Column containing metabolite names or IDs.")
+    parser.add_argument("--direction-column", default=None, help="Optional up/down direction column.")
+    parser.add_argument("--top-n", type=int, default=5, help="Number of candidates to keep in JSON.")
+    parser.add_argument("--include-pathway-details", action="store_true", help="Also fetch KEGG pathway flat-file details. Slower; use for final interpretation.")
+    parser.add_argument("--max-detail-pathways", type=int, default=30, help="Maximum pathways for --include-pathway-details.")
+    parser.add_argument("--skip-pubchem-cid", action="store_true", help="Skip PubChem SID-to-CID lookup.")
+    parser.add_argument("--background-input", default=None, help="Optional CSV/TSV/TXT background universe for pathway enrichment.")
+    parser.add_argument("--background-name-column", default=None, help="Column containing background metabolite names or IDs.")
+    parser.add_argument("--enrichment", action="store_true", help="Run hypergeometric pathway enrichment. Requires --background-input.")
+    parser.add_argument("--organism", default=None, help="Optional KEGG organism code such as hsa, mmu, rno, ath.")
+    parser.add_argument("--pathway-scope", choices=("map", "organism", "both"), default="map", help="Use reference map pathways, organism-specific pathways, or both.")
+    args = parser.parse_args()
+
+    in_path = Path(args.input)
+    out_prefix = Path(args.out_prefix)
+    out_prefix.parent.mkdir(parents=True, exist_ok=True)
+
+    rows, name_col = read_table(in_path, args.name_column)
+    client = KeggClient()
+    pubchem = PubChemClient()
+
+    mappings, pathway_hits, all_pathways = map_rows(
+        rows,
+        name_col,
+        client,
+        pubchem,
+        direction_column=args.direction_column,
+        top_n=args.top_n,
+        skip_pubchem_cid=args.skip_pubchem_cid,
+        organism=args.organism,
+        pathway_scope=args.pathway_scope,
+    )
 
     pathway_names = list_pathway_names(client, all_pathways)
     pathway_details = {}
@@ -453,6 +604,41 @@ def main() -> int:
                 "confidence": item["confidence"],
             })
 
+    enrichment_csv = None
+    enrichment_rows = []
+    background_mappings = []
+    if args.enrichment:
+        if not args.background_input:
+            raise ValueError("--enrichment requires --background-input")
+        bg_rows, bg_name_col = read_table(Path(args.background_input), args.background_name_column)
+        background_mappings, bg_pathway_hits, bg_pathways = map_rows(
+            bg_rows,
+            bg_name_col,
+            client,
+            pubchem,
+            direction_column=None,
+            top_n=args.top_n,
+            skip_pubchem_cid=args.skip_pubchem_cid,
+            organism=args.organism,
+            pathway_scope=args.pathway_scope,
+        )
+        all_enrich_pathways = set(all_pathways) | set(bg_pathways)
+        enrich_names = list_pathway_names(client, all_enrich_pathways)
+        enrichment_rows = compute_enrichment(mappings, background_mappings)
+        enrichment_csv = out_prefix.with_suffix(".pathway_enrichment.csv")
+        with enrichment_csv.open("w", newline="", encoding="utf-8-sig") as fh:
+            fieldnames = [
+                "pathway_id", "pathway_name", "overlap_count", "diff_count",
+                "pathway_background_count", "background_count", "p_value",
+                "fdr_bh", "fold_enrichment", "overlap_kegg_compounds"
+            ]
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in enrichment_rows:
+                out_row = dict(row)
+                out_row["pathway_name"] = enrich_names.get(row["pathway_id"], row["pathway_id"])
+                writer.writerow(out_row)
+
     json_path = out_prefix.with_suffix(".json")
     payload = {
         "input": str(in_path),
@@ -460,7 +646,12 @@ def main() -> int:
         "mapping_csv": str(mapping_csv),
         "pathway_summary_csv": str(summary_csv),
         "final_table_csv": str(final_csv),
+        "pathway_enrichment_csv": str(enrichment_csv) if enrichment_csv else "",
+        "organism": args.organism,
+        "pathway_scope": args.pathway_scope,
         "mappings": mappings,
+        "background_mappings": background_mappings,
+        "enrichment": enrichment_rows,
         "pathway_names": pathway_names,
         "pathway_details": pathway_details,
     }
@@ -469,6 +660,8 @@ def main() -> int:
     print(f"Wrote {mapping_csv}")
     print(f"Wrote {summary_csv}")
     print(f"Wrote {final_csv}")
+    if enrichment_csv:
+        print(f"Wrote {enrichment_csv}")
     print(f"Wrote {json_path}")
     return 0
 
