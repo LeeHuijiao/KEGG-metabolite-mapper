@@ -1,0 +1,4 @@
+metabolite,direction,log2FC,FDR
+Glucose,up,1.23,0.01
+L-Lactate,down,-0.86,0.03
+Citric acid,up,0.72,0.04

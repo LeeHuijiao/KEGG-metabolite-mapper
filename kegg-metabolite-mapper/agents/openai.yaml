@@ -1,0 +1,4 @@
+interface:
+  display_name: "KEGG Metabolite Mapper"
+  short_description: "Map differential metabolites to KEGG compounds and pathways"
+  default_prompt: "Map my differential metabolites to KEGG Compound IDs and KEGG pathways with biological interpretation."
