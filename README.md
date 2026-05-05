@@ -1,5 +1,7 @@
 # KEGG Metabolite Mapper Skill
 
+[中文说明 / Chinese README](README.zh-CN.md)
+
 A Codex skill for mapping differential metabolites to KEGG Compound IDs and KEGG pathways using the official KEGG REST API, then producing pathway hit summaries and biological interpretation-ready tables.
 
 ## What It Does
@@ -120,4 +122,3 @@ KEGG REST should be used according to KEGG's usage policy. This skill rate-limit
 - KEGG's PubChem conversion uses PubChem SID, not PubChem CID.
 - A pathway hit is not statistical enrichment by itself; enrichment requires a background universe and statistical method.
 - A metabolite hit does not prove pathway activation or inhibition without additional evidence.
-
