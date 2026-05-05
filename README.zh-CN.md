@@ -15,6 +15,7 @@
 - 从 KEGG 记录中提取 ChEBI、PubChem 等交叉引用。
 - 如果输入表中已有 HMDB / ChEBI / PubChem CID，会保留到最终结果表。
 - 输出逐代谢物映射表、通路汇总表、最终展示表和 JSON 详情。
+- 可选输出 pathway enrichment 表，包含超几何检验 p 值和 BH-FDR。
 - 支持后续写通路生物学解释，例如能量代谢、氨基酸代谢、脂质代谢等方向的解释。
 
 ## 仓库结构
@@ -104,6 +105,35 @@ python ".\kegg-metabolite-mapper\scripts\map_metabolites.py" `
   --max-detail-pathways 20
 ```
 
+使用背景集做 pathway enrichment：
+
+```powershell
+python ".\kegg-metabolite-mapper\scripts\map_metabolites.py" `
+  --input ".\examples\metabolites_example.csv" `
+  --background-input ".\examples\background_metabolites_example.csv" `
+  --out-prefix ".\output\kegg_metabolites_enrichment" `
+  --name-column "metabolite" `
+  --background-name-column "metabolite" `
+  --direction-column "direction" `
+  --enrichment
+```
+
+如果背景集很大，而你暂时不需要 PubChem CID，可加 `--skip-pubchem-cid`，探索性富集会快很多。
+
+如果需要物种特异性 pathway，例如 human pathway：
+
+```powershell
+python ".\kegg-metabolite-mapper\scripts\map_metabolites.py" `
+  --input ".\examples\metabolites_example.csv" `
+  --background-input ".\examples\background_metabolites_example.csv" `
+  --out-prefix ".\output\kegg_human_enrichment" `
+  --name-column "metabolite" `
+  --background-name-column "metabolite" `
+  --organism "hsa" `
+  --pathway-scope "organism" `
+  --enrichment
+```
+
 ## 输出文件
 
 假设 `--out-prefix` 设置为 `output/kegg_metabolites`，脚本会生成：
@@ -113,6 +143,7 @@ python ".\kegg-metabolite-mapper\scripts\map_metabolites.py" `
 | `output/kegg_metabolites.metabolite_mappings.csv` | 每个代谢物的 KEGG compound 匹配结果、置信度和 pathway 列表 |
 | `output/kegg_metabolites.pathway_summary.csv` | 按 pathway 汇总命中数、上下调数量和命中的代谢物 |
 | `output/kegg_metabolites.final_table.csv` | 适合论文/汇报展示的最终表 |
+| `output/kegg_metabolites.pathway_enrichment.csv` | 使用 `--enrichment` 时生成，包含 p 值、FDR 和富集倍数 |
 | `output/kegg_metabolites.json` | 完整候选匹配、pathway 名称和详细信息 |
 
 `final_table.csv` 的列为：
@@ -146,6 +177,7 @@ Interpretation caution: [匹配歧义 / 泛通路 / 小命中数 / 缺少背景�
 - 名称匹配可能混淆异构体、盐形式、构型、同分异构脂质和泛化合物名称。
 - KEGG 的 PubChem 转换接口使用的是 PubChem SID，不是常见的 PubChem CID。
 - pathway hit summary 不是严格通路富集分析；富集分析需要背景集和统计方法。
+- 做 enrichment 时，背景集应该使用本实验中可检测/可定量的代谢物全集，而不是所有 KEGG compound。
 - 代谢物命中某条 pathway 只能提示相关代谢过程可能改变，不能单独证明通路激活或抑制。
 
 ## 官方数据源

@@ -15,6 +15,7 @@ A Codex skill for mapping differential metabolites to KEGG Compound IDs and KEGG
   - metabolite-level mapping table,
   - pathway-level summary table,
   - final report-style table,
+  - optional pathway enrichment table with hypergeometric p-values and BH-FDR,
   - JSON with candidates and details.
 
 ## Repository Layout
@@ -70,6 +71,35 @@ python ".\kegg-metabolite-mapper\scripts\map_metabolites.py" `
   --max-detail-pathways 20
 ```
 
+Run pathway enrichment with a measured-background universe:
+
+```powershell
+python ".\kegg-metabolite-mapper\scripts\map_metabolites.py" `
+  --input ".\examples\metabolites_example.csv" `
+  --background-input ".\examples\background_metabolites_example.csv" `
+  --out-prefix ".\output\kegg_metabolites_enrichment" `
+  --name-column "metabolite" `
+  --background-name-column "metabolite" `
+  --direction-column "direction" `
+  --enrichment
+```
+
+For large background tables, add `--skip-pubchem-cid` when PubChem CID output is not needed; this makes exploratory enrichment much faster.
+
+Use organism-specific pathway filtering when needed:
+
+```powershell
+python ".\kegg-metabolite-mapper\scripts\map_metabolites.py" `
+  --input ".\examples\metabolites_example.csv" `
+  --background-input ".\examples\background_metabolites_example.csv" `
+  --out-prefix ".\output\kegg_human_enrichment" `
+  --name-column "metabolite" `
+  --background-name-column "metabolite" `
+  --organism "hsa" `
+  --pathway-scope "organism" `
+  --enrichment
+```
+
 ## Input Format
 
 Minimum:
@@ -99,6 +129,7 @@ Given `--out-prefix output/kegg_metabolites`, the script writes:
 - `output/kegg_metabolites.metabolite_mappings.csv`
 - `output/kegg_metabolites.pathway_summary.csv`
 - `output/kegg_metabolites.final_table.csv`
+- `output/kegg_metabolites.pathway_enrichment.csv` when `--enrichment` is used
 - `output/kegg_metabolites.json`
 
 `final_table.csv` uses this report-friendly schema:
@@ -121,4 +152,5 @@ KEGG REST should be used according to KEGG's usage policy. This skill rate-limit
 - m/z-only input is not enough for reliable KEGG mapping without formula, adduct, ion mode, and mass tolerance.
 - KEGG's PubChem conversion uses PubChem SID, not PubChem CID.
 - A pathway hit is not statistical enrichment by itself; enrichment requires a background universe and statistical method.
+- For enrichment, use the measured/detectable metabolite universe as `--background-input`, not all KEGG compounds.
 - A metabolite hit does not prove pathway activation or inhibition without additional evidence.
